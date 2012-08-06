@@ -504,11 +504,11 @@ static void curcial_oj_adjust_xy(uint8_t *data, int16_t *mSumDeltaX, int16_t *mS
 		data[2] = 0x81;
 	if (data[1] == 0x80)
 		data[1] = 0x81;
-	if (1) {
+	if (0) {
 		deltaX = (-1)*((int8_t) data[2]); /*X=2*/
 		deltaY = (1)*((int8_t) data[1]); /*Y=1*/
 	} else {
-		deltaX = (-1)*((int8_t) data[1]);
+		deltaX = (1)*((int8_t) data[1]);
 		deltaY = (1)*((int8_t) data[2]);
 	}
 	*mSumDeltaX = -((int16_t)deltaX);
@@ -520,7 +520,7 @@ static struct curcial_oj_platform_data glacier_oj_data = {
 	.oj_shutdown = curcial_oj_shutdown,
 	.oj_adjust_xy = curcial_oj_adjust_xy,
 	.mdelay_time = 7,
-	.normal_th = 8,
+	.normal_th = 10,
 	.xy_ratio = 15,
 	.interval = 20,
 	.swap = false,
@@ -528,10 +528,10 @@ static struct curcial_oj_platform_data glacier_oj_data = {
 	.y = 1,
 	.share_power = false,
 	.debugflag = 0,
-	.ap_code = true,
-	.sht_tbl = {0, 2250, 2500, 2750, 3000},
-	.pxsum_tbl = {0, 0, 40, 44, 49},
-	.degree = 5,
+	.ap_code = false,
+	.sht_tbl = {30, 200, 250, 300, 350, 400, 450},
+	.pxsum_tbl = {0, 0, 70, 80, 90, 100, 110},
+	.degree = 7,
 	.Xsteps = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		10, 10, 10, 10, 10, 9, 9, 9, 9, 9,
 		9, 9, 9, 9, 9, 9, 9, 9, 9, 9},
@@ -540,7 +540,6 @@ static struct curcial_oj_platform_data glacier_oj_data = {
 		9, 9, 9, 9, 9, 9, 9, 9, 9, 9},
 	.irq_gpio = 26,
 	.rst_gpio = GLACIER_OJ_RSTz,
-	.ledval = 6,
 };
 
 static struct platform_device microp_devices[] = {
@@ -1735,11 +1734,17 @@ static uint32_t qsd_spi_gpio_off_table[] = {
 	PCOM_GPIO_CFG(89, 0, GPIO_OUTPUT, GPIO_NO_PULL, GPIO_16MA)
 };
 
+static uint32_t spi_oj_table[] = {
+	PCOM_GPIO_CFG(GLACIER_OJ_MOTION, 0, GPIO_INPUT, GPIO_NO_PULL, GPIO_2MA)
+};
+
 static int msm_qsd_spi_gpio_config(void)
 {
 	config_gpio_table(qsd_spi_gpio_on_table,
 		ARRAY_SIZE(qsd_spi_gpio_on_table));
 	gpio_set_value(GLACIER_OJ_RSTz, 1);
+	config_gpio_table(spi_oj_table,
+		ARRAY_SIZE(spi_oj_table));
 	return 0;
 }
 
@@ -1747,6 +1752,7 @@ static void msm_qsd_spi_gpio_release(void)
 {
 	config_gpio_table(qsd_spi_gpio_off_table,
 		ARRAY_SIZE(qsd_spi_gpio_off_table));
+	gpio_set_value(GLACIER_OJ_MOTION, 0);
 	gpio_set_value(GLACIER_OJ_RSTz, 0);
 }
 
@@ -2148,35 +2154,39 @@ static int glacier_sensor_power_disable(char *power)
 static int glacier_sensor_vreg_on(void)
 {
 	int rc;
+
+	struct pm_gpio camera_analog_pw_on = {
+		.direction		= PM_GPIO_DIR_OUT,
+		.output_buffer	= PM_GPIO_OUT_BUF_CMOS,
+		.output_value	= 1,
+		.pull			= PM_GPIO_PULL_NO,
+		.out_strength	= PM_GPIO_STRENGTH_HIGH,
+		.function = PM_GPIO_FUNC_NORMAL,
+	};
+
 	pr_info("%s camera vreg on\n", __func__);
 
-	if (system_rev > 1) {
-		/*Board XC and after*/
-		/*camera VCM power*/
+	/*camera VCM power*/
+	if (system_rev >= 1)
 		rc = glacier_sensor_power_enable("gp4", 2850);
-		/*camera digital power*/
-		rc = glacier_sensor_power_enable("wlan", 1800);
-	} else {
-		/*Board XA,XB*/
-		/*camera VCM power*/
+	else
 		rc = glacier_sensor_power_enable("wlan", 2850);
-		/*camera digital power*/
-		rc = glacier_sensor_power_enable("gp4", 1800);
-	}
-
-	/*camera analog power*/
-	if (system_rev > 0) {
-		/* printk("camera analog power by GPIO\n"); */
-		/* This delay is just temporary work-around,*/
-		/*and will remove when HW power team fix */
-		/*the power up two stage problem with pmic */
-		udelay(200);
-		gpio_set_value(GLACIER_CAM_A2V85_EN, 1);
-	} else
-		rc = glacier_sensor_power_enable("gp6", 2850);
 
 	/*camera IO power*/
 	rc = glacier_sensor_power_enable("gp2", 1800);
+
+
+	/*camera analog power*/
+	pm8xxx_gpio_config(GLACIER_CAM_A2V85_EN, &camera_analog_pw_on);
+
+	/*camera digital power*/
+	if (system_rev >= 1)
+		rc = glacier_sensor_power_enable("wlan", 1800);
+	else
+		rc = glacier_sensor_power_enable("gp4", 1800);
+
+	udelay(200);
+
 	return rc;
 }
 
@@ -2184,17 +2194,22 @@ static int glacier_sensor_vreg_off(void)
 {
 	int rc;
 	/*camera analog power*/
-	if (system_rev > 0) {
-		printk(KERN_INFO "camera analog power by GPIO\n");
-		gpio_set_value(GLACIER_CAM_A2V85_EN, 0);
-	} else {
-		printk(KERN_INFO "camera analog power by PMIC\n");
-		rc = glacier_sensor_power_disable("gp6");
-	}
+	struct pm_gpio camera_analog_pw_off = {
+		.direction		= PM_GPIO_DIR_OUT,
+		.output_buffer	= PM_GPIO_OUT_BUF_CMOS,
+		.output_value	= 0,
+		.pull			= PM_GPIO_PULL_NO,
+		.out_strength	= PM_GPIO_STRENGTH_LOW,
+		.function = PM_GPIO_FUNC_NORMAL,
+	};
+
+	pm8xxx_gpio_config(GLACIER_CAM_A2V85_EN, &camera_analog_pw_off);
 	/*camera digital power*/
 	rc = glacier_sensor_power_disable("gp4");
+
 	/*camera IO power*/
 	rc = glacier_sensor_power_disable("gp2");
+
 	/*camera VCM power*/
 	rc = glacier_sensor_power_disable("wlan");
 	return rc;
@@ -2285,6 +2300,11 @@ static struct msm_camera_sensor_info msm_camera_sensor_s5k4e1gx_data = {
 	.sensor_reset   = GLACIER_CAM_RST,
 	.vcm_pwd        = GLACIER_CAM_PWD,
 	.camera_clk_switch	= glacier_s5k4e1gx_clk_switch,
+/*	.camera_analog_pwd = "gp8",*/
+	.camera_io_pwd = "gp2",
+	.camera_vcm_pwd = "wlan",
+	.camera_digital_pwd = "gp4",
+	.analog_pwd1_gpio = GLACIER_CAM_A2V85_EN,
 	.camera_power_on = glacier_sensor_vreg_on,
 	.camera_power_off = glacier_sensor_vreg_off,
 	.pdata          = &msm_camera_device_data,
@@ -2295,11 +2315,8 @@ static struct msm_camera_sensor_info msm_camera_sensor_s5k4e1gx_data = {
 	.sensor_platform_info = NULL,
 	.resource       = msm_camera_resources,
 	.num_resources  = ARRAY_SIZE(msm_camera_resources),
-	.power_down_disable = false, /* true: disable pwd down function */
-
-	.csi_if = 0,
-	.dev_node = 0,
-	.use_rawchip = 0,
+	.sensor_lc_disable = true, /* disable sensor lens correction */
+	.cam_select_pin = GLACIER_CLK_SWITCH,
 };
 
 static struct platform_device msm_camera_sensor_s5k4e1gx = {
